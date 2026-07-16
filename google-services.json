@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "718791774264",
+    "project_id": "skoollink-staff",
+    "storage_bucket": "skoollink-staff.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:718791774264:android:385ff1afcc03045e3596cd",
+        "android_client_info": {
+          "package_name": "com.rosemont.skoollink.staff"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBdOk2PyghPnf3lQvAykh0QCTiAAhG66FY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:718791774264:android:6dd6359ff3c8c3db3596cd",
+        "android_client_info": {
+          "package_name": "kr.rosemont.skoolclass"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBdOk2PyghPnf3lQvAykh0QCTiAAhG66FY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -19,6 +19,7 @@
     },
     "android": {
       "package": "kr.rosemont.skoolclass",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0F1117",
         "foregroundImage": "./assets/icon.png"
