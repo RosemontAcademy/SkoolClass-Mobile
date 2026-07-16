@@ -27,6 +27,12 @@
     "plugins": [
       "expo-secure-store",
       "expo-notifications"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e398133f-1338-4270-8923-f4aa2f08510c"
+      }
+    },
+    "owner": "rosemont_skooling"
   }
 }
