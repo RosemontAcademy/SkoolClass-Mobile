@@ -2,7 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BackHandler, Linking, Platform, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
+
+import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
+
+// 앱이 포그라운드일 때도 알림 배너/사운드 표시
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 // same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
 const WIDGET_URL = 'https://class.rosemont.kr/embed';
@@ -74,16 +87,53 @@ export default function App() {
       case 'shell-ready':
         setLastEvent('shell-ready');
         break;
-      case 'push-subscribe':
-        // Phase 1: 여기서 expo-notifications 토큰 발급 → register-push-device 호출
-        setLastEvent(`subscribe: ${data.topicName ?? '?'}`);
+      case 'push-subscribe': {
+        const email = topicToEmail(data.topicName ?? '');
+        setLastEvent(`subscribe: ${email || '?'}`);
+        if (!email) break;
+        registerDevice(email)
+          .then(() => setLastEvent(`push ok: ${email}`))
+          .catch((err) =>
+            setLastEvent(`push ERR: ${err instanceof Error ? err.message : String(err)}`),
+          );
         break;
+      }
       case 'push-unsubscribe':
-        // Phase 1: push_devices에서 이 기기 토큰 행 삭제
         setLastEvent(`unsubscribe: ${data.topicName ?? '?'}`);
+        unregisterDevice().catch((err) => console.warn('[push] unregister failed', err));
         break;
     }
   }, []);
+
+  // 알림 탭 딥링크: data.route를 위젯 쿼리로 전달 (§4.5 — 위젯 측 핸들러는 웹 배포로 추가 예정)
+  const navigateToRoute = useCallback((notifData: Record<string, unknown> | undefined) => {
+    const route = typeof notifData?.route === 'string' ? notifData.route : '';
+    if (!route) return;
+    const params = new URLSearchParams({ route });
+    for (const key of ['studentId', 'conversationId'] as const) {
+      const value = notifData?.[key];
+      if (typeof value === 'string' && value) params.set(key, value);
+    }
+    const target = `${WIDGET_URL}?${params.toString()}`;
+    webviewRef.current?.injectJavaScript(
+      `window.location.href = ${JSON.stringify(target)}; true;`,
+    );
+  }, []);
+
+  useEffect(() => {
+    // 웜 스타트: 앱 떠 있는 상태에서 알림 탭
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      navigateToRoute(response.notification.request.content.data as Record<string, unknown>);
+    });
+    // 콜드 스타트: 알림 탭으로 앱이 켜진 경우 (WebView 로드 시간을 기다렸다 주입)
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      const data = response?.notification.request.content.data as
+        | Record<string, unknown>
+        | undefined;
+      if (data?.route) setTimeout(() => navigateToRoute(data), 4000);
+    });
+    return () => sub.remove();
+  }, [navigateToRoute]);
 
   // 구글 OAuth 등 외부 네비게이션은 시스템 브라우저로 (WebView 내부 진행 금지)
   const handleShouldStartLoad = useCallback((request: { url: string }) => {
@@ -155,7 +205,8 @@ const styles = StyleSheet.create({
   },
   debugBanner: {
     position: 'absolute',
-    bottom: 8,
+    bottom: 40, // 안드로이드 제스처 바에 가려지지 않게
+
     left: 8,
     right: 8,
     paddingHorizontal: 10,
