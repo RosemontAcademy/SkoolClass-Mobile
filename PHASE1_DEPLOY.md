@@ -1,59 +1,34 @@
-# Phase 1 배포 체크리스트 — 돌아오면 이 순서대로
+# Phase 1 배포 상태 — 남은 건 E2E 테스트뿐
 
-> 목표: 🧪 SkoolLink 알림테스트(또는 EduFinance 개별알림)로 보낸 푸시가 **SkoolClass 앱에서 실제로 울리는 것** 확인.
-> 코드는 전부 준비됨. 아래는 사용자 손이 필요한 것들 + 최종 빌드.
+> 2026-07-16 갱신: 원래 "사용자 손 필요"였던 것까지 전부 Claude가 원격으로 완료.
+> Firebase 앱 등록은 Downloads의 서비스 계정 키로 Management API 직접 호출,
+> 엣지 펑션 배포는 Supabase CLI(자격 증명 관리자 토큰), FCM 키는 EAS GraphQL로 처리.
 
-## 1. Firebase에 Android 앱 추가 (5분, 콘솔)
+## ✅ 완료 (전부 배포/적용됨)
 
-skoollink 서버푸시 때 쓴 **같은 Firebase 프로젝트**에서:
+| 항목 | 상태 |
+|---|---|
+| `push_devices` 테이블 | 라이브 DB 생성됨 (RLS on, 정책 없음 = 서비스롤 전용) |
+| `register-push-device` 엣지 펑션 | v1 ACTIVE, 등록/해제 스모크 테스트 통과 |
+| `send-push` 이중 채널 fan-out | v8 ACTIVE (나쵸코드 무수정 + Expo Push 병렬) |
+| Firebase Android 앱 등록 | `kr.rosemont.skoolclass` (appId 1:718791774264:android:6dd6...) |
+| google-services.json | 발급받아 리포에 포함, app.json 연결 |
+| FCM V1 서비스계정 키 → EAS | skoolclass-mobile 프로젝트에 업로드·연결 완료 |
+| 앱 셸 푸시 배선 | subscribe → 권한 → 토큰 → 서버 등록, 딥링크 기초 포함 |
 
-1. Firebase 콘솔 → 프로젝트 설정 → 일반 → "앱 추가" → Android
-2. 패키지 이름: `kr.rosemont.skoolclass` (정확히 이대로)
-3. `google-services.json` 다운로드 → `E:\Projects\skoolclass-mobile\google-services.json`에 저장
-4. Claude에게 "받았어" 라고 하면 app.json 연결 + 새 APK 빌드 진행
+## ⏳ 남은 것 — E2E 테스트 (폰 필요)
 
-## 2. push_devices 테이블 생성 (SQL 에디터에서 1회 실행)
+1. **새 APK 설치** (빌드 완료되면 Claude가 링크 줌) — 기존 개발 앱 삭제 후 설치 권장
+2. SkoolClass 앱 → 위젯 로그인 → 알림 권한 허용 → 하단 배너 **`push ok: (이메일)`** 확인
+   - `push ERR: ...`가 뜨면 내용 그대로 Claude에게
+3. Claude가 `push_devices`에서 기기 행 확인 (직접 조회 가능)
+4. Claude가 `send-push`로 그 이메일에 테스트 발송 (직접 호출 가능)
+5. **SkoolClass 앱에 알림 울리면 Phase 1 핵심 통과** 🎉 — 알림 탭하면 앱 열리는지도 확인
+6. 로즈몬트-나쵸코드 앱에도 여전히 울리는지 확인 (이중 채널 검증)
 
-⚠️ 이 스니펫은 `DB_SKOOLCLASS_SCHEMA.sql`에 **이미 반영돼 있음** — 라이브엔 아래만 실행 (스키마 파일 통째 재실행 절대 금지):
+## 다음 (E2E 통과 후)
 
-```sql
-CREATE TABLE IF NOT EXISTS public.push_devices (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email TEXT NOT NULL,
-  expo_push_token TEXT NOT NULL UNIQUE,
-  platform TEXT,
-  app_version TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS push_devices_email_idx ON public.push_devices (email);
-ALTER TABLE public.push_devices ENABLE ROW LEVEL SECURITY;
-```
-
-## 3. 엣지 펑션 배포 (대시보드, 2개)
-
-| 펑션 | 정본 위치 | 내용 |
-|---|---|---|
-| `register-push-device` (신규) | `skoolclass-pro/supabase/functions/register-push-device/index.ts` | 앱이 토큰↔이메일 등록/해제 |
-| `send-push` (수정) | `skoollink-pro/supabase/functions/send-push/index.ts` | 나쵸코드 + 자체 앱 이중 채널 fan-out |
-
-기존 나쵸코드 발송 코드는 한 줄도 안 바뀜 — 자체 채널이 옆에 추가됐을 뿐 (안전).
-
-## 4. E2E 테스트 순서
-
-1. 새 APK 설치 (1번 후 Claude가 빌드 링크 줌) — **기존 개발 앱 삭제 후 설치 권장**
-2. SkoolClass 앱 열고 위젯 로그인 → 하단 배너가 `push ok: (이메일)` 되는지 확인
-   - `push ERR: ...`이 뜨면 그 내용 그대로 Claude에게
-3. Supabase 대시보드에서 `select * from push_devices;` → 내 기기 행 1개 확인
-4. SkoolLink staff 앱 🧪 알림테스트(또는 EduFinance 개별 미납 알림)로 그 이메일에 발송
-5. **SkoolClass 앱에 알림 울리면 Phase 1 핵심 통과** 🎉
-   - 나쵸코드 로즈몬트앱에도 여전히 울리는지 같이 확인 (이중 채널 검증)
-
-## 준비된 코드 현황 (Claude가 이미 완료)
-
-- ✅ `push_devices` 스키마 (DB_SKOOLCLASS_SCHEMA.sql 반영)
-- ✅ `register-push-device` 엣지 펑션 (신규 작성)
-- ✅ `send-push` 이중 채널 fan-out (+push_logs `[app]` 행, DeviceNotRegistered 자동 정리)
-- ✅ 앱 셸: subscribe → 권한 요청 → Expo 토큰 발급 → 서버 등록 / unsubscribe → 행 삭제
-- ✅ 알림 탭 딥링크 기초 (data.route → 위젯 쿼리 전달, 콜드/웜 스타트 모두)
-- ⏳ 나머지 발송처 7곳 fan-out은 send-push E2E 통과 후 일괄 진행 (같은 헬퍼 복붙)
+- 나머지 발송처 7곳에 같은 fan-out 복붙: notify-boarding / notify-arrival / bus-eta-alerts / notify-chat-message / notify-team-message / curriculum-end-notify / notify-public-inquiry (+ data.route 딥링크 페이로드)
+- DB 웹훅(팀챗 일반 메시지) 전수 조사
+- 위젯 측 딥링크 핸들러 (?route= 쿼리 → 화면 전환)
+- iOS 빌드 (Apple Developer 계정 필요 — 사용자 확인 필요)
