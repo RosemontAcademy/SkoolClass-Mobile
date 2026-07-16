@@ -3,9 +3,17 @@ import { BackHandler, Linking, Platform, StyleSheet, Text, View } from 'react-na
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
+import * as SecureStore from 'expo-secure-store';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 
 import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
+
+// same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
+const WIDGET_URL = 'https://class.rosemont.kr/embed';
+const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
+const SHELL_VERSION = '1.1.0';
+// 위젯 로그인 키 스냅샷(iOS WebKit 7일 삭제 대비)이 저장되는 SecureStore 키
+const LS_SNAPSHOT_KEY = 'widget_ls_snapshot';
 
 // 앱이 포그라운드일 때도 알림 배너/사운드 표시
 Notifications.setNotificationHandler({
@@ -13,40 +21,73 @@ Notifications.setNotificationHandler({
     shouldShowBanner: true,
     shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: false, // 뱃지는 위젯 안읽음 수(set-badge 브릿지)가 단일 소스
   }),
 });
 
-// same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
-const WIDGET_URL = 'https://class.rosemont.kr/embed';
-const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
-
-// PoC 단계 브릿지: 위젯의 nachocode.ts Direct 모드가 기대하는 window.Nachocode를
-// 그대로 흉내낸다 (웹 코드 무수정). Phase 1에서 window.SkoolClassApp 1급 브릿지로 승격.
-// 주의: 반환값은 위젯 isOkResult 통과 형태여야 함 — status:'error'/statusCode 203 금지.
-const NACHOCODE_SHIM = `
+// 주입 스크립트 4역할:
+//  ① 세션 복구 — SecureStore 스냅샷의 로그인 키를 localStorage에 되살림(있는 키는 안 덮음)
+//  ② window.SkoolClassApp 1급 브릿지 (subscribePush/unsubscribePush/setBadge)
+//  ③ window.Nachocode shim — 구버전 웹 호환용 (웹이 SkoolClassApp을 우선 감지)
+//  ④ 로그인 키 주기 스냅샷 → 네이티브(SecureStore) 백업
+const buildInjection = (restored: Record<string, string> | null) => `
 (function () {
   if (window.__skoolclassShellReady) return;
   window.__skoolclassShellReady = true;
   var send = function (payload) {
     try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); } catch (e) {}
   };
+  try {
+    var restored = ${JSON.stringify(restored ?? {})};
+    for (var k in restored) {
+      if (localStorage.getItem(k) === null) localStorage.setItem(k, restored[k]);
+    }
+  } catch (e) {}
+  var AUTH_KEYS = ['skool_widget_token','skool_widget_student_id','skool_widget_role','skool_widget_email','skool_widget_children'];
+  var snapshot = function () {
+    try {
+      var out = {};
+      for (var i = 0; i < AUTH_KEYS.length; i++) {
+        var v = localStorage.getItem(AUTH_KEYS[i]);
+        if (v !== null) out[AUTH_KEYS[i]] = v;
+      }
+      send({ type: 'ls-snapshot', data: out });
+    } catch (e) {}
+  };
+  window.SkoolClassApp = {
+    version: '${SHELL_VERSION}',
+    subscribePush: function (email) {
+      send({ type: 'push-subscribe', topicName: String(email || '') });
+      snapshot();
+      return Promise.resolve({ ok: true });
+    },
+    unsubscribePush: function () {
+      send({ type: 'push-unsubscribe' });
+      return Promise.resolve({ ok: true });
+    },
+    setBadge: function (count) { send({ type: 'set-badge', count: count }); },
+  };
   window.Nachocode = {
     env: { isApp: function () { return true; } },
     push: {
       subscribePushTopic: function (topicName) {
-        send({ type: 'push-subscribe', topicName: topicName });
-        return Promise.resolve({ statusCode: 200, status: 'success' });
+        return window.SkoolClassApp.subscribePush(topicName).then(function () {
+          return { statusCode: 200, status: 'success' };
+        });
       },
-      unsubscribePushTopic: function (topicName) {
-        send({ type: 'push-unsubscribe', topicName: topicName });
-        return Promise.resolve({ statusCode: 200, status: 'success' });
+      unsubscribePushTopic: function () {
+        return window.SkoolClassApp.unsubscribePush().then(function () {
+          return { statusCode: 200, status: 'success' };
+        });
       },
       getSubscriptionList: function () {
         return Promise.resolve({ statusCode: 200, status: 'success', list: [] });
       }
     }
   };
+  setInterval(snapshot, 20000);
+  window.addEventListener('pagehide', snapshot);
+  setTimeout(snapshot, 5000);
   send({ type: 'shell-ready', url: location.href });
 })();
 true;
@@ -55,7 +96,9 @@ true;
 type BridgeEvent =
   | { type: 'shell-ready'; url?: string }
   | { type: 'push-subscribe'; topicName?: string }
-  | { type: 'push-unsubscribe'; topicName?: string };
+  | { type: 'push-unsubscribe'; topicName?: string }
+  | { type: 'ls-snapshot'; data?: Record<string, string> }
+  | { type: 'set-badge'; count?: number };
 
 const isInternalUrl = (url: string) => {
   try {
@@ -70,8 +113,16 @@ const isInternalUrl = (url: string) => {
 export default function App() {
   const webviewRef = useRef<WebView>(null);
   const canGoBackRef = useRef(false);
-  // PoC 검증용 배너: shim이 위젯에서 받은 마지막 이벤트를 화면에 노출
+  // undefined = SecureStore 읽는 중(WebView 렌더 보류), null = 스냅샷 없음
+  const [restoredLS, setRestoredLS] = useState<Record<string, string> | null | undefined>(undefined);
+  // PoC 검증용 배너: 브릿지 마지막 이벤트를 화면에 노출
   const [lastEvent, setLastEvent] = useState<string | null>(null);
+
+  useEffect(() => {
+    SecureStore.getItemAsync(LS_SNAPSHOT_KEY)
+      .then((raw) => setRestoredLS(raw ? JSON.parse(raw) : null))
+      .catch(() => setRestoredLS(null));
+  }, []);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     let data: BridgeEvent | null = null;
@@ -82,7 +133,6 @@ export default function App() {
     }
     if (!data?.type) return;
 
-    console.log('[bridge]', data);
     switch (data.type) {
       case 'shell-ready':
         setLastEvent('shell-ready');
@@ -99,13 +149,50 @@ export default function App() {
         break;
       }
       case 'push-unsubscribe':
-        setLastEvent(`unsubscribe: ${data.topicName ?? '?'}`);
+        setLastEvent('unsubscribe');
         unregisterDevice().catch((err) => console.warn('[push] unregister failed', err));
+        // 로그아웃 = 세션 스냅샷도 폐기 (다음 부팅에 로그인 상태 부활 방지)
+        void SecureStore.deleteItemAsync(LS_SNAPSHOT_KEY).catch(() => {});
+        void Notifications.setBadgeCountAsync(0).catch(() => {});
         break;
+      case 'ls-snapshot':
+        if (data.data && typeof data.data === 'object') {
+          void SecureStore.setItemAsync(LS_SNAPSHOT_KEY, JSON.stringify(data.data)).catch(() => {});
+        }
+        break;
+      case 'set-badge': {
+        const count = Math.max(0, Math.floor(Number(data.count) || 0));
+        void Notifications.setBadgeCountAsync(count).catch(() => {});
+        break;
+      }
     }
   }, []);
 
-  // 알림 탭 딥링크: data.route를 위젯 쿼리로 전달 (§4.5 — 위젯 측 핸들러는 웹 배포로 추가 예정)
+  // 구글 OAuth 등 외부 네비게이션은 시스템 브라우저로 (WebView 내부 진행 금지)
+  const handleShouldStartLoad = useCallback((request: { url: string }) => {
+    if (isInternalUrl(request.url)) return true;
+    void Linking.openURL(request.url).catch(() => {});
+    return false;
+  }, []);
+
+  const handleNavigationStateChange = useCallback((nav: WebViewNavigation) => {
+    canGoBackRef.current = nav.canGoBack;
+  }, []);
+
+  // Android 하드웨어 뒤로가기 → WebView 히스토리 우선
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (canGoBackRef.current) {
+        webviewRef.current?.goBack();
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, []);
+
+  // 알림 탭 딥링크: data.route를 위젯 쿼리로 전달 (위젯 핸들러가 화면 전환)
   const navigateToRoute = useCallback((notifData: Record<string, unknown> | undefined) => {
     const route = typeof notifData?.route === 'string' ? notifData.route : '';
     if (!route) return;
@@ -135,54 +222,32 @@ export default function App() {
     return () => sub.remove();
   }, [navigateToRoute]);
 
-  // 구글 OAuth 등 외부 네비게이션은 시스템 브라우저로 (WebView 내부 진행 금지)
-  const handleShouldStartLoad = useCallback((request: { url: string }) => {
-    if (isInternalUrl(request.url)) return true;
-    void Linking.openURL(request.url).catch(() => {});
-    return false;
-  }, []);
-
-  const handleNavigationStateChange = useCallback((nav: WebViewNavigation) => {
-    canGoBackRef.current = nav.canGoBack;
-  }, []);
-
-  // Android 하드웨어 뒤로가기 → WebView 히스토리 우선
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (canGoBackRef.current) {
-        webviewRef.current?.goBack();
-        return true;
-      }
-      return false;
-    });
-    return () => sub.remove();
-  }, []);
-
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <StatusBar style="auto" />
-        <WebView
-          ref={webviewRef}
-          source={{ uri: WIDGET_URL }}
-          style={styles.webview}
-          injectedJavaScriptBeforeContentLoaded={NACHOCODE_SHIM}
-          onMessage={handleMessage}
-          onShouldStartLoadWithRequest={handleShouldStartLoad}
-          onOpenWindow={(event) => {
-            // window.open (소셜 로그인 팝업 등) → 시스템 브라우저
-            const url = event.nativeEvent.targetUrl;
-            if (url) void Linking.openURL(url).catch(() => {});
-          }}
-          onNavigationStateChange={handleNavigationStateChange}
-          domStorageEnabled
-          javaScriptEnabled
-          sharedCookiesEnabled
-          allowsBackForwardNavigationGestures
-          // 위젯 TTS/사운드는 사용자 제스처 없이도 재생돼야 함
-          mediaPlaybackRequiresUserAction={false}
-        />
+        {restoredLS !== undefined && (
+          <WebView
+            ref={webviewRef}
+            source={{ uri: WIDGET_URL }}
+            style={styles.webview}
+            injectedJavaScriptBeforeContentLoaded={buildInjection(restoredLS)}
+            onMessage={handleMessage}
+            onShouldStartLoadWithRequest={handleShouldStartLoad}
+            onOpenWindow={(event) => {
+              // window.open (소셜 로그인 팝업 등) → 시스템 브라우저
+              const url = event.nativeEvent.targetUrl;
+              if (url) void Linking.openURL(url).catch(() => {});
+            }}
+            onNavigationStateChange={handleNavigationStateChange}
+            domStorageEnabled
+            javaScriptEnabled
+            sharedCookiesEnabled
+            allowsBackForwardNavigationGestures
+            // 위젯 TTS/사운드는 사용자 제스처 없이도 재생돼야 함
+            mediaPlaybackRequiresUserAction={false}
+          />
+        )}
         {lastEvent !== null && (
           <View style={styles.debugBanner}>
             <Text style={styles.debugText} numberOfLines={1}>
@@ -206,7 +271,6 @@ const styles = StyleSheet.create({
   debugBanner: {
     position: 'absolute',
     bottom: 40, // 안드로이드 제스처 바에 가려지지 않게
-
     left: 8,
     right: 8,
     paddingHorizontal: 10,
