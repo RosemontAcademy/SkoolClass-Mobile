@@ -27,7 +27,8 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {

@@ -4,6 +4,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 
 import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
@@ -11,7 +12,18 @@ import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
 // same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
 const WIDGET_URL = 'https://class.rosemont.kr/embed';
 const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
-const SHELL_VERSION = '1.1.0';
+const SHELL_VERSION = '1.2.0';
+
+// 외부 URL 열기: http(s)는 Custom Tab(SFSafariViewController/Chrome Custom Tab —
+// 앱 위에 시트로 얹혀서 풀 브라우저 앱 전환보다 덜 거슬리고, 구글 OAuth도 허용).
+// tel:/mailto: 등은 OS 기본 처리.
+const openExternal = (url: string) => {
+  if (/^https?:/i.test(url)) {
+    void WebBrowser.openBrowserAsync(url).catch(() => Linking.openURL(url).catch(() => {}));
+  } else {
+    void Linking.openURL(url).catch(() => {});
+  }
+};
 // 위젯 로그인 키 스냅샷(iOS WebKit 7일 삭제 대비)이 저장되는 SecureStore 키
 const LS_SNAPSHOT_KEY = 'widget_ls_snapshot';
 
@@ -66,6 +78,8 @@ const buildInjection = (restored: Record<string, string> | null) => `
       return Promise.resolve({ ok: true });
     },
     setBadge: function (count) { send({ type: 'set-badge', count: count }); },
+    // 소셜 로그인 완료 신호 — 셸이 Custom Tab을 자동으로 닫는다 (구셸에선 미존재 → 웹은 ?. 호출)
+    notifySocialLoginDone: function () { send({ type: 'social-login-done' }); },
   };
   window.Nachocode = {
     env: { isApp: function () { return true; } },
@@ -98,7 +112,8 @@ type BridgeEvent =
   | { type: 'push-subscribe'; topicName?: string }
   | { type: 'push-unsubscribe'; topicName?: string }
   | { type: 'ls-snapshot'; data?: Record<string, string> }
-  | { type: 'set-badge'; count?: number };
+  | { type: 'set-badge'; count?: number }
+  | { type: 'social-login-done' };
 
 const isInternalUrl = (url: string) => {
   try {
@@ -165,13 +180,22 @@ export default function App() {
         void Notifications.setBadgeCountAsync(count).catch(() => {});
         break;
       }
+      case 'social-login-done':
+        // 위젯 폴링이 로그인 완료를 감지 → OAuth Custom Tab을 자동으로 닫는다.
+        // iOS: dismissBrowser. Android: 프로그래매틱 dismiss가 없어 자기 딥링크로
+        // 앱을 전면에 세워 탭을 덮는다 (실패해도 사용자가 X로 닫으면 그만 — 무해).
+        void WebBrowser.dismissBrowser().catch(() => {});
+        if (Platform.OS === 'android') {
+          void Linking.openURL('skoolclass://').catch(() => {});
+        }
+        break;
     }
   }, []);
 
-  // 구글 OAuth 등 외부 네비게이션은 시스템 브라우저로 (WebView 내부 진행 금지)
+  // 구글 OAuth 등 외부 네비게이션은 Custom Tab으로 (WebView 내부 진행 금지)
   const handleShouldStartLoad = useCallback((request: { url: string }) => {
     if (isInternalUrl(request.url)) return true;
-    void Linking.openURL(request.url).catch(() => {});
+    openExternal(request.url);
     return false;
   }, []);
 
@@ -235,9 +259,9 @@ export default function App() {
             onMessage={handleMessage}
             onShouldStartLoadWithRequest={handleShouldStartLoad}
             onOpenWindow={(event) => {
-              // window.open (소셜 로그인 팝업 등) → 시스템 브라우저
+              // window.open (소셜 로그인 팝업 등) → Custom Tab
               const url = event.nativeEvent.targetUrl;
-              if (url) void Linking.openURL(url).catch(() => {});
+              if (url) openExternal(url);
             }}
             onNavigationStateChange={handleNavigationStateChange}
             domStorageEnabled
