@@ -12,7 +12,7 @@ import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
 // same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
 const WIDGET_URL = 'https://class.rosemont.kr/embed';
 const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
-const SHELL_VERSION = '1.2.2';
+const SHELL_VERSION = '1.2.3';
 // 크래시 블랙박스: 브릿지/수명주기 이벤트를 SecureStore에 남겨 다음 부팅 때 배너로 보여준다
 const BREADCRUMB_KEY = 'crash_breadcrumbs';
 let breadcrumbs: string[] = [];
@@ -236,44 +236,56 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  // 알림 탭 딥링크: data.route를 위젯 쿼리로 전달 (위젯 핸들러가 화면 전환)
-  const navigateToRoute = useCallback((notifData: Record<string, unknown> | undefined) => {
+  // 알림 딥링크 URL 구성: data.route → /embed?route=...&studentId=...
+  const buildRouteUrl = (notifData: Record<string, unknown> | undefined): string | null => {
     const route = typeof notifData?.route === 'string' ? notifData.route : '';
-    if (!route) return;
+    if (!route) return null;
     const params = new URLSearchParams({ route });
     for (const key of ['studentId', 'conversationId'] as const) {
       const value = notifData?.[key];
       if (typeof value === 'string' && value) params.set(key, value);
     }
-    const target = `${WIDGET_URL}?${params.toString()}`;
-    webviewRef.current?.injectJavaScript(
-      `window.location.href = ${JSON.stringify(target)}; true;`,
-    );
+    return `${WIDGET_URL}?${params.toString()}`;
+  };
+
+  // 콜드 스타트: 알림 탭으로 켜졌으면 첫 로드 URL에 라우트를 박는다 —
+  // "기본 탭 몇 초 → 리로드 → 이동" 대신 한 번에 목적지로 (v1.2.3에서 개선).
+  // undefined = 아직 판별 중(WebView 렌더 보류. getLast는 수 ms라 체감 없음)
+  const [initialUrl, setInitialUrl] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        const data = response?.notification.request.content.data as
+          | Record<string, unknown>
+          | undefined;
+        setInitialUrl(buildRouteUrl(data) ?? WIDGET_URL);
+      })
+      .catch(() => setInitialUrl(WIDGET_URL));
   }, []);
 
+  // 웜 스타트: 앱 떠 있는 상태에서 알림 탭 → 라우트 URL로 이동
   useEffect(() => {
-    // 웜 스타트: 앱 떠 있는 상태에서 알림 탭
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      navigateToRoute(response.notification.request.content.data as Record<string, unknown>);
-    });
-    // 콜드 스타트: 알림 탭으로 앱이 켜진 경우 (WebView 로드 시간을 기다렸다 주입)
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      const data = response?.notification.request.content.data as
-        | Record<string, unknown>
-        | undefined;
-      if (data?.route) setTimeout(() => navigateToRoute(data), 4000);
+      const target = buildRouteUrl(
+        response.notification.request.content.data as Record<string, unknown>,
+      );
+      if (target) {
+        webviewRef.current?.injectJavaScript(
+          `window.location.href = ${JSON.stringify(target)}; true;`,
+        );
+      }
     });
     return () => sub.remove();
-  }, [navigateToRoute]);
+  }, []);
 
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <StatusBar style="auto" />
-        {restoredLS !== undefined && (
+        {restoredLS !== undefined && initialUrl !== undefined && (
           <WebView
             ref={webviewRef}
-            source={{ uri: WIDGET_URL }}
+            source={{ uri: initialUrl }}
             style={styles.webview}
             injectedJavaScriptBeforeContentLoaded={buildInjection(restoredLS)}
             onMessage={handleMessage}
