@@ -12,7 +12,7 @@ import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
 // same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
 const WIDGET_URL = 'https://class.rosemont.kr/embed';
 const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
-const SHELL_VERSION = '1.2.0';
+const SHELL_VERSION = '1.2.1';
 
 // 외부 URL 열기: http(s)는 Custom Tab(SFSafariViewController/Chrome Custom Tab —
 // 앱 위에 시트로 얹혀서 풀 브라우저 앱 전환보다 덜 거슬리고, 구글 OAuth도 허용).
@@ -181,13 +181,11 @@ export default function App() {
         break;
       }
       case 'social-login-done':
-        // 위젯 폴링이 로그인 완료를 감지 → OAuth Custom Tab을 자동으로 닫는다.
-        // iOS: dismissBrowser. Android: 프로그래매틱 dismiss가 없어 자기 딥링크로
-        // 앱을 전면에 세워 탭을 덮는다 (실패해도 사용자가 X로 닫으면 그만 — 무해).
+        // 위젯 폴링이 로그인 완료를 감지 → OAuth Custom Tab 닫기 시도.
+        // ⚠️ Android 셀프 딥링크(skoolclass:// 자기 호출)로 탭을 덮는 트릭은 금지 —
+        // 액티비티 재진입 크래시 실기기 확인(2026-07-17, v1.2.0 팅김 3사 공통 원인).
+        // Android에서 dismissBrowser가 안 먹으면 사용자가 X로 닫는다(로그인은 유지됨).
         void WebBrowser.dismissBrowser().catch(() => {});
-        if (Platform.OS === 'android') {
-          void Linking.openURL('skoolclass://').catch(() => {});
-        }
         break;
     }
   }, []);
