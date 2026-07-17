@@ -12,14 +12,27 @@ import { registerDevice, topicToEmail, unregisterDevice } from './src/push';
 // same-site 규칙: 위젯은 반드시 class.rosemont.kr에서 로드 (vercel.app 금지)
 const WIDGET_URL = 'https://class.rosemont.kr/embed';
 const INTERNAL_HOSTS = new Set(['class.rosemont.kr']);
-const SHELL_VERSION = '1.2.1';
+const SHELL_VERSION = '1.2.2';
+// 크래시 블랙박스: 브릿지/수명주기 이벤트를 SecureStore에 남겨 다음 부팅 때 배너로 보여준다
+const BREADCRUMB_KEY = 'crash_breadcrumbs';
+let breadcrumbs: string[] = [];
+const crumb = (label: string) => {
+  breadcrumbs = [...breadcrumbs.slice(-4), `${new Date().toISOString().slice(11, 19)} ${label}`];
+  void SecureStore.setItemAsync(BREADCRUMB_KEY, JSON.stringify(breadcrumbs)).catch(() => {});
+};
 
 // 외부 URL 열기: http(s)는 Custom Tab(SFSafariViewController/Chrome Custom Tab —
 // 앱 위에 시트로 얹혀서 풀 브라우저 앱 전환보다 덜 거슬리고, 구글 OAuth도 허용).
 // tel:/mailto: 등은 OS 기본 처리.
 const openExternal = (url: string) => {
   if (/^https?:/i.test(url)) {
-    void WebBrowser.openBrowserAsync(url).catch(() => Linking.openURL(url).catch(() => {}));
+    crumb(`tab-open ${url.slice(0, 40)}`);
+    void WebBrowser.openBrowserAsync(url)
+      .then((r) => crumb(`tab-closed ${r?.type ?? '?'}`))
+      .catch((e) => {
+        crumb(`tab-err ${String(e).slice(0, 40)}`);
+        void Linking.openURL(url).catch(() => {});
+      });
   } else {
     void Linking.openURL(url).catch(() => {});
   }
@@ -137,6 +150,16 @@ export default function App() {
     SecureStore.getItemAsync(LS_SNAPSHOT_KEY)
       .then((raw) => setRestoredLS(raw ? JSON.parse(raw) : null))
       .catch(() => setRestoredLS(null));
+    // 블랙박스: 직전 세션(팅김 포함)의 마지막 이벤트들을 배너로 노출 후 초기화
+    void SecureStore.getItemAsync(BREADCRUMB_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const prev: string[] = JSON.parse(raw);
+        if (prev.length) setLastEvent(`prev: ${prev.join(' → ')}`);
+        void SecureStore.deleteItemAsync(BREADCRUMB_KEY).catch(() => {});
+      })
+      .catch(() => {});
+    crumb('boot');
   }, []);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
@@ -181,11 +204,10 @@ export default function App() {
         break;
       }
       case 'social-login-done':
-        // 위젯 폴링이 로그인 완료를 감지 → OAuth Custom Tab 닫기 시도.
-        // ⚠️ Android 셀프 딥링크(skoolclass:// 자기 호출)로 탭을 덮는 트릭은 금지 —
-        // 액티비티 재진입 크래시 실기기 확인(2026-07-17, v1.2.0 팅김 3사 공통 원인).
-        // Android에서 dismissBrowser가 안 먹으면 사용자가 X로 닫는다(로그인은 유지됨).
-        void WebBrowser.dismissBrowser().catch(() => {});
+        // 크래시 격리 중(v1.2.2): dismissBrowser도 일단 제거 — v1.2.1(딥링크 제거)에도
+        // 팅김이 지속돼 이 호출 또는 Custom Tab 자체가 용의자. 탭은 사용자가 X로 닫는다.
+        crumb('social-login-done');
+        if (Platform.OS === 'ios') void WebBrowser.dismissBrowser().catch(() => {});
         break;
     }
   }, []);
@@ -272,7 +294,7 @@ export default function App() {
         )}
         {lastEvent !== null && (
           <View style={styles.debugBanner}>
-            <Text style={styles.debugText} numberOfLines={1}>
+            <Text style={styles.debugText} numberOfLines={4}>
               bridge: {lastEvent}
             </Text>
           </View>
