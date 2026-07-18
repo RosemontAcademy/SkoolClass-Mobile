@@ -18,6 +18,11 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6792184201",
+        "appleTeamId": "HP8246HL88"
+      }
+    }
   }
 }
