@@ -32,3 +32,4 @@
 - DB 웹훅(팀챗 일반 메시지) 전수 조사
 - 위젯 측 딥링크 핸들러 (?route= 쿼리 → 화면 전환)
 - iOS 빌드 (Apple Developer 계정 필요 — 사용자 확인 필요)
+- **학생 본인 계정 푸시(숙제 히어로)** — ✅ 서버 쪽 다 켜 둠(2026-10-04, 받는 기기 0). 아이가 이 앱에 자기 계정(학생 «본인» 연락처 이메일)으로 로그인하면 위젯이 `SkoolClassApp.subscribePush(본인 이메일)`로 그 기기를 등록하고(실패해도 화면 표시 없음), 토·일 KST 10:00 pg_cron `homework-hero-push`가 오늘 오프닝을 아직 안 본 아이에게 «🦸 {이름}! 숙제 시간이야!»를 보낸다(data.route=`student/home` → 위젯 홈 → 오프닝). 출시 때 확인: Test 학생(test0924@rosemont.kr)으로 앱 로그인 → push_devices 에 학생 이메일 행 → 함수 `{force:true}` 호출 → 알림·누르면 오프닝. ⚠️ 한 기기 = 한 로그인 — 엄마 폰에 아이 계정으로 로그인하면 그 폰의 학부모 알림이 끊긴다(«아이 기기에서만 아이 계정» 안내). 정본: `skoolclass-pro/implementation-plan/2026-10-03_숙제히어로_스쿨리.md` «P2+»
